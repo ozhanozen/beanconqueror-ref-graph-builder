@@ -1,3 +1,4 @@
+# streamlit_app.py
 """
 Beanconqueror Reference Graph Builder (Streamlit)
 
@@ -13,14 +14,12 @@ from typing import Any, Dict, List
 import altair as alt
 import pandas as pd
 import streamlit as st
-from streamlit_js_eval import streamlit_js_eval
 
 from bc_ref_builder import BrewSection, build_reference_json, compute_section_summaries
 
-FLOW_COLOR = "#0071a5"      # blue
-WEIGHT_COLOR = "#b08d2a"    # coffee yellow-brown
+FLOW_COLOR = "#0071a5"    # blue
+WEIGHT_COLOR = "#b08d2a"  # coffee yellow-brown
 
-# Short labels so they fit
 MODE_LABELS = {
     "flow": "Flow",
     "weight_delta": "Δ Weight",
@@ -31,6 +30,65 @@ LABEL_TO_MODE = {v: k for k, v in MODE_LABELS.items()}
 MODE_TO_LABEL = {k: v for k, v in MODE_LABELS.items()}
 
 
+# ----------------------------
+# Persistence via URL query param
+# ----------------------------
+def _sections_to_compact(sections: List[BrewSection]) -> List[Dict[str, Any]]:
+    return [{"d": float(s.duration_s), "m": str(s.mode), "v": float(s.value), "l": str(s.label or "")} for s in sections]
+
+
+def _sections_from_compact(payload: Any) -> List[BrewSection]:
+    if not isinstance(payload, list):
+        return []
+    out: List[BrewSection] = []
+    for it in payload:
+        if not isinstance(it, dict):
+            continue
+        try:
+            out.append(
+                BrewSection(
+                    duration_s=float(it.get("d", 0.0)),
+                    mode=str(it.get("m", "wait")),  # type: ignore[arg-type]
+                    value=float(it.get("v", 0.0)),
+                    label=str(it.get("l", "")),
+                )
+            )
+        except Exception:
+            continue
+    return out
+
+
+def _restore_from_query_params() -> None:
+    if st.session_state.get("_restored_from_url", False):
+        return
+
+    qp = st.query_params
+    if "profile" in qp:
+        try:
+            raw = qp.get("profile")
+            if isinstance(raw, list):
+                raw = raw[0]
+            payload = json.loads(raw) if raw else None
+            secs = _sections_from_compact(payload)
+            if secs:
+                st.session_state.sections = secs
+        except Exception:
+            pass
+
+    st.session_state._restored_from_url = True
+
+
+def _write_to_query_params() -> None:
+    try:
+        payload = _sections_to_compact(st.session_state.sections)
+        st.query_params["profile"] = json.dumps(payload, separators=(",", ":"))
+    except Exception:
+        pass
+
+
+# ----------------------------
+# UI helpers
+# ----------------------------
 def _default_filename_base() -> str:
     return f"Beanconqueror_Ref_Graph_{date.today():%y%m%d}"
 
@@ -39,7 +97,8 @@ def _init_state() -> None:
     if "sections" not in st.session_state:
         st.session_state.sections = []
 
-    # Add-row widget keys
+    _restore_from_query_params()
+
     for k, v in {
         "new_label_input": "",
         "new_mode_input": MODE_TO_LABEL["wait"],
@@ -52,11 +111,9 @@ def _init_state() -> None:
         if k not in st.session_state:
             st.session_state[k] = v
 
-    # Export filename
     if "export_filename" not in st.session_state:
         st.session_state.export_filename = _default_filename_base()
 
-    # Safe reset at the top of a rerun (before widgets instantiate)
     if st.session_state.reset_add_row:
         st.session_state["new_label_input"] = ""
         st.session_state["new_mode_input"] = MODE_TO_LABEL["wait"]
@@ -121,10 +178,7 @@ def _chart(df: pd.DataFrame) -> alt.Chart:
         )
     )
 
-    c_weight = base.mark_line(color=WEIGHT_COLOR, strokeWidth=2).encode(
-        y=alt.Y("weight_g:Q", title="Weight (g)")
-    )
-
+    c_weight = base.mark_line(color=WEIGHT_COLOR, strokeWidth=2).encode(y=alt.Y("weight_g:Q", title="Weight (g)"))
     c_flow = base.mark_line(color=FLOW_COLOR, strokeWidth=2).encode(
         y=alt.Y("flow_gps:Q", title="Flow (g/s)", axis=alt.Axis(orient="right"))
     )
@@ -201,18 +255,12 @@ def _json_tree(data: Dict[str, Any]) -> str:
             suffix = " (empty)" if len(v) == 0 else ""
             lines.append(f"{branch}{k}{suffix}")
             if len(v) > 0 and isinstance(v[0], dict):
-                child_keys = sorted(v[0].keys())
-                for j, ck in enumerate(child_keys):
-                    child_last = j == len(child_keys) - 1
-                    child_branch = "└─ " if child_last else "├─ "
-                    lines.append(f"{cont}{child_branch}{ck}")
+                for ck in sorted(v[0].keys()):
+                    lines.append(f"{cont}├─ {ck}")
         elif isinstance(v, dict):
             lines.append(f"{branch}{k}")
-            child_keys = sorted(v.keys())
-            for j, ck in enumerate(child_keys):
-                child_last = j == len(child_keys) - 1
-                child_branch = "└─ " if child_last else "├─ "
-                lines.append(f"{cont}{child_branch}{ck}")
+            for ck in sorted(v.keys()):
+                lines.append(f"{cont}├─ {ck}")
         else:
             lines.append(f"{branch}{k}")
 
@@ -227,60 +275,79 @@ def _sanitize_filename_base(name: str) -> str:
     return s.strip(" .")
 
 
-def _viewport_guard() -> bool:
-    """
-    Returns True if screen is narrow.
-
-    More robust than only innerWidth:
-    - checks both innerWidth and matchMedia
-    - retries once if the probe returns None (common on initial load)
-    """
-    probe = streamlit_js_eval(
-        js_expressions="({w: window.innerWidth, narrow: window.matchMedia('(max-width: 900px)').matches})",
-        key="viewport_probe",
-    )
-
-    if probe is None and "viewport_probe_rerun" not in st.session_state:
-        st.session_state.viewport_probe_rerun = True
-        st.rerun()
-
-    if isinstance(probe, dict):
-        return bool(probe.get("narrow", False))
-
-    return False
-
-
 def main() -> None:
     st.set_page_config(page_title="Beanconqueror Reference Graph Builder", page_icon="☕", layout="wide")
     _init_state()
 
-    # ---- Viewport guard (warning + hide editor on narrow screens) ----
-    is_narrow = _viewport_guard()
-    if is_narrow:
-        st.warning("For best experience use landscape or desktop.", icon="📱")
+    # --- Single, reliable phone-portrait blocker (699px) ---
+    st.markdown(
+        """
+        <style>
+          #bc_overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 999999;
+            background: rgba(0,0,0,0.75);
+            backdrop-filter: blur(2px);
+            -webkit-backdrop-filter: blur(2px);
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            text-align: center;
+          }
+          #bc_overlay .box {
+            max-width: 520px;
+            width: 100%;
+            border-radius: 16px;
+            padding: 18px 18px;
+            border: 1px solid rgba(255,193,7,0.35);
+            background: rgba(255,193,7,0.12);
+            color: white;
+            font-size: 16px;
+            line-height: 1.35;
+          }
+          #bc_overlay .box b { display:block; margin-bottom: 8px; font-size: 17px; }
+
+          /* show on small + portrait-ish screens */
+          @media (max-width: 699px) and (max-aspect-ratio: 1/1) {
+            #bc_overlay { display: flex; }
+          }
+        </style>
+
+        <div id="bc_overlay">
+          <div class="box">
+            <b>📱 Editor disabled on small portrait screens</b>
+            Rotate to <b>landscape</b> or open on <b>desktop</b>.
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     st.title("Beanconqueror Reference Graph Builder ☕")
 
     with st.sidebar:
         st.header("Settings")
         dt_s = st.number_input("Sample period dT (s)", min_value=0.01, max_value=2.0, value=0.1, step=0.01)
-        initial_weight_g = st.number_input(
-            "Initial weight (g)", min_value=0.0, max_value=10_000.0, value=0.0, step=1.0
-        )
+        initial_weight_g = st.number_input("Initial weight (g)", min_value=0.0, max_value=10_000.0, value=0.0, step=1.0)
 
         st.markdown("---")
 
         if st.button("🧹 Clear sections"):
             st.session_state.sections = []
+            _write_to_query_params()
             st.rerun()
 
         if st.button("✨ Import example"):
             st.session_state.sections = _example_sections_from_script()
+            _write_to_query_params()
             st.rerun()
 
     sections: List[BrewSection] = st.session_state.sections
+    _write_to_query_params()  # keep URL synced (refresh-safe)
 
-    # ---- Plot (always at top) ----
+    # ---- Plot ----
     if sections:
         try:
             df_preview = _build_preview_df(sections, dt_s=float(dt_s), initial_weight_g=float(initial_weight_g))
@@ -294,166 +361,162 @@ def main() -> None:
     st.markdown("---")
     st.header("Profile editor")
 
-    if is_narrow:
-        st.info("Editing is hidden on small screens. Rotate to landscape or open on desktop to edit.")
-    else:
-        if sections:
-            summaries = compute_section_summaries(sections, initial_weight_g=float(initial_weight_g))
+    # ---- Existing rows ----
+    if sections:
+        summaries = compute_section_summaries(sections, initial_weight_g=float(initial_weight_g))
 
-            header_cols = st.columns([2.0, 2.2, 1.4, 1.1, 1.1, 1.3, 1.3, 1.2, 1.2, 0.5, 0.5, 0.5])
-            header_cols[0].markdown("**Label**")
-            header_cols[1].markdown("**Mode**")
-            header_cols[2].markdown("**Duration (s)**")
-            header_cols[3].markdown("**Start Time**")
-            header_cols[4].markdown("**End Time**")
-            header_cols[5].markdown("**Flow (g/s)**")
-            header_cols[6].markdown("**ΔWeight (g)**")
-            header_cols[7].markdown("**Start Weight**")
-            header_cols[8].markdown("**End Weight**")
-            header_cols[9].markdown("**↑**")
-            header_cols[10].markdown("**↓**")
-            header_cols[11].markdown("**Del**")
+        header_cols = st.columns([2.0, 2.2, 1.4, 1.1, 1.1, 1.3, 1.3, 1.2, 1.2, 0.5, 0.5, 0.5])
+        header_cols[0].markdown("**Label**")
+        header_cols[1].markdown("**Mode**")
+        header_cols[2].markdown("**Duration (s)**")
+        header_cols[3].markdown("**Start Time**")
+        header_cols[4].markdown("**End Time**")
+        header_cols[5].markdown("**Flow (g/s)**")
+        header_cols[6].markdown("**ΔWeight (g)**")
+        header_cols[7].markdown("**Start Weight**")
+        header_cols[8].markdown("**End Weight**")
+        header_cols[9].markdown("**↑**")
+        header_cols[10].markdown("**↓**")
+        header_cols[11].markdown("**Del**")
 
-            for i, (sec, row) in enumerate(zip(sections, summaries)):
-                cols = st.columns([2.0, 2.2, 1.4, 1.1, 1.1, 1.3, 1.3, 1.2, 1.2, 0.5, 0.5, 0.5])
+        for i, (sec, row) in enumerate(zip(sections, summaries)):
+            cols = st.columns([2.0, 2.2, 1.4, 1.1, 1.1, 1.3, 1.3, 1.2, 1.2, 0.5, 0.5, 0.5])
 
-                cols[0].text_input(
-                    "Label",
-                    value=sec.label,
-                    key=_section_key(i, "label"),
+            cols[0].text_input("Label", value=sec.label, key=_section_key(i, "label"), label_visibility="collapsed")
+
+            cols[1].selectbox(
+                "Mode",
+                options=list(LABEL_TO_MODE.keys()),
+                index=list(LABEL_TO_MODE.keys()).index(MODE_TO_LABEL[sec.mode]),
+                key=_section_key(i, "mode"),
+                label_visibility="collapsed",
+            )
+
+            cols[2].number_input(
+                "Duration (s)",
+                min_value=0.1,
+                max_value=3600.0,
+                value=float(sec.duration_s),
+                step=0.5,
+                key=_section_key(i, "duration"),
+                label_visibility="collapsed",
+            )
+
+            cols[3].markdown(_fmt_time_mmss(row["t_start_s"]))
+            cols[4].markdown(_fmt_time_mmss(row["t_end_s"]))
+
+            mode_label = st.session_state.get(_section_key(i, "mode"), MODE_TO_LABEL[sec.mode])
+            mode = LABEL_TO_MODE[mode_label]
+
+            if mode == "wait":
+                cols[5].markdown("—")
+                cols[6].markdown("—")
+            elif mode == "flow":
+                cols[5].number_input(
+                    "Flow (g/s)",
+                    min_value=0.0,
+                    max_value=1000.0,
+                    value=float(row["flow_gps"]),
+                    step=0.1,
+                    key=_section_key(i, "flow"),
                     label_visibility="collapsed",
                 )
-
-                cols[1].selectbox(
-                    "Mode",
-                    options=list(LABEL_TO_MODE.keys()),
-                    index=list(LABEL_TO_MODE.keys()).index(MODE_TO_LABEL[sec.mode]),
-                    key=_section_key(i, "mode"),
+                cols[6].markdown(_fmt(float(row["delta_weight_g"])))
+            elif mode == "weight_delta":
+                cols[5].markdown(_fmt(float(row["flow_gps"])))
+                cols[6].number_input(
+                    "ΔWeight (g)",
+                    min_value=0.0,
+                    max_value=10_000.0,
+                    value=float(row["delta_weight_g"]),
+                    step=1.0,
+                    key=_section_key(i, "delta"),
                     label_visibility="collapsed",
                 )
+            else:  # weight_target
+                cols[5].markdown(_fmt(float(row["flow_gps"])))
+                cols[6].markdown(_fmt(float(row["delta_weight_g"])))
 
-                cols[2].number_input(
-                    "Duration (s)",
-                    min_value=0.1,
-                    max_value=3600.0,
-                    value=float(sec.duration_s),
-                    step=0.5,
-                    key=_section_key(i, "duration"),
+            cols[7].markdown(_fmt(float(row["start_weight_g"])))
+
+            if mode == "weight_target":
+                cols[8].number_input(
+                    "End Weight (g)",
+                    min_value=0.0,
+                    max_value=10_000.0,
+                    value=float(row["end_weight_g"]),
+                    step=1.0,
+                    key=_section_key(i, "end"),
                     label_visibility="collapsed",
                 )
-
-                cols[3].markdown(_fmt_time_mmss(row["t_start_s"]))
-                cols[4].markdown(_fmt_time_mmss(row["t_end_s"]))
-
-                mode_label = st.session_state.get(_section_key(i, "mode"), MODE_TO_LABEL[sec.mode])
-                mode = LABEL_TO_MODE[mode_label]
-
-                if mode == "wait":
-                    cols[5].markdown("—")
-                    cols[6].markdown("—")
-
-                elif mode == "flow":
-                    cols[5].number_input(
-                        "Flow (g/s)",
-                        min_value=0.0,
-                        max_value=1000.0,
-                        value=float(row["flow_gps"]),
-                        step=0.1,
-                        key=_section_key(i, "flow"),
-                        label_visibility="collapsed",
-                    )
-                    cols[6].markdown(_fmt(row["delta_weight_g"]))
-
-                elif mode == "weight_delta":
-                    cols[5].markdown(_fmt(row["flow_gps"]))
-                    cols[6].number_input(
-                        "ΔWeight (g)",
-                        min_value=0.0,
-                        max_value=10_000.0,
-                        value=float(row["delta_weight_g"]),
-                        step=1.0,
-                        key=_section_key(i, "delta"),
-                        label_visibility="collapsed",
-                    )
-
-                else:  # weight_target
-                    cols[5].markdown(_fmt(row["flow_gps"]))
-                    cols[6].markdown(_fmt(row["delta_weight_g"]))
-
-                cols[7].markdown(_fmt(float(row["start_weight_g"])))
-
-                if mode == "weight_target":
-                    cols[8].number_input(
-                        "End Weight (g)",
-                        min_value=0.0,
-                        max_value=10_000.0,
-                        value=float(row["end_weight_g"]),
-                        step=1.0,
-                        key=_section_key(i, "end"),
-                        label_visibility="collapsed",
-                    )
-                else:
-                    cols[8].markdown(_fmt(float(row["end_weight_g"])))
-
-                if cols[9].button("↑", key=f"up_{i}", use_container_width=True):
-                    st.session_state.sections = _move_section(sections, i, -1)
-                    st.rerun()
-
-                if cols[10].button("↓", key=f"down_{i}", use_container_width=True):
-                    st.session_state.sections = _move_section(sections, i, +1)
-                    st.rerun()
-
-                if cols[11].button("🗑️", key=f"del_{i}", use_container_width=True):
-                    st.session_state.sections = sections[:i] + sections[i + 1 :]
-                    st.rerun()
-
-            new_sections = _sync_sections_from_widgets(sections, initial_weight_g=float(initial_weight_g))
-            if new_sections != sections:
-                st.session_state.sections = new_sections
-                st.rerun()
-
-        st.markdown("---")
-        st.subheader("+ Add section")
-
-        add_cols = st.columns([2.0, 2.2, 1.4, 1.3, 1.3])
-
-        add_cols[0].text_input("Label", key="new_label_input")
-        add_cols[1].selectbox("Mode", options=list(LABEL_TO_MODE.keys()), key="new_mode_input")
-        add_cols[2].number_input("Duration (s)", min_value=0.0, max_value=3600.0, step=0.5, key="new_duration_input")
-
-        new_mode = LABEL_TO_MODE[st.session_state.new_mode_input]
-
-        if new_mode == "wait":
-            add_cols[3].markdown("Flow: —")
-            add_cols[4].markdown("ΔWeight: —")
-        elif new_mode == "flow":
-            add_cols[3].number_input("Flow (g/s)", min_value=0.0, max_value=1000.0, step=0.1, key="new_flow_input")
-            add_cols[4].markdown("ΔWeight: auto")
-        elif new_mode == "weight_delta":
-            add_cols[3].markdown("Flow: auto")
-            add_cols[4].number_input("ΔWeight (g)", min_value=0.0, max_value=10_000.0, step=1.0, key="new_delta_input")
-        else:  # weight_target
-            add_cols[3].markdown("Flow: auto")
-            add_cols[4].number_input("End Weight (g)", min_value=0.0, max_value=10_000.0, step=1.0, key="new_end_input")
-
-        if st.button("Add section"):
-            dur = float(st.session_state.new_duration_input)
-            if dur <= 0:
-                st.error("Duration must be > 0")
             else:
-                if new_mode == "wait":
-                    sec = BrewSection(duration_s=dur, mode="wait", value=0.0, label=str(st.session_state.new_label_input))
-                elif new_mode == "flow":
-                    sec = BrewSection(duration_s=dur, mode="flow", value=float(st.session_state.new_flow_input), label=str(st.session_state.new_label_input))
-                elif new_mode == "weight_delta":
-                    sec = BrewSection(duration_s=dur, mode="weight_delta", value=float(st.session_state.new_delta_input), label=str(st.session_state.new_label_input))
-                else:
-                    sec = BrewSection(duration_s=dur, mode="weight_target", value=float(st.session_state.new_end_input), label=str(st.session_state.new_label_input))
+                cols[8].markdown(_fmt(float(row["end_weight_g"])))
 
-                st.session_state.sections = st.session_state.sections + [sec]
-                st.session_state.reset_add_row = True
+            if cols[9].button("↑", key=f"up_{i}", use_container_width=True):
+                st.session_state.sections = _move_section(sections, i, -1)
+                _write_to_query_params()
                 st.rerun()
 
+            if cols[10].button("↓", key=f"down_{i}", use_container_width=True):
+                st.session_state.sections = _move_section(sections, i, +1)
+                _write_to_query_params()
+                st.rerun()
+
+            if cols[11].button("🗑️", key=f"del_{i}", use_container_width=True):
+                st.session_state.sections = sections[:i] + sections[i + 1 :]
+                _write_to_query_params()
+                st.rerun()
+
+        new_sections = _sync_sections_from_widgets(sections, initial_weight_g=float(initial_weight_g))
+        if new_sections != sections:
+            st.session_state.sections = new_sections
+            _write_to_query_params()
+            st.rerun()
+
+    # ---- Add row ----
+    st.markdown("---")
+    st.subheader("+ Add section")
+
+    add_cols = st.columns([2.0, 2.2, 1.4, 1.3, 1.3])
+    add_cols[0].text_input("Label", key="new_label_input")
+    add_cols[1].selectbox("Mode", options=list(LABEL_TO_MODE.keys()), key="new_mode_input")
+    add_cols[2].number_input("Duration (s)", min_value=0.0, max_value=3600.0, step=0.5, key="new_duration_input")
+
+    new_mode = LABEL_TO_MODE[st.session_state.new_mode_input]
+
+    if new_mode == "wait":
+        add_cols[3].markdown("Flow: —")
+        add_cols[4].markdown("ΔWeight: —")
+    elif new_mode == "flow":
+        add_cols[3].number_input("Flow (g/s)", min_value=0.0, max_value=1000.0, step=0.1, key="new_flow_input")
+        add_cols[4].markdown("ΔWeight: auto")
+    elif new_mode == "weight_delta":
+        add_cols[3].markdown("Flow: auto")
+        add_cols[4].number_input("ΔWeight (g)", min_value=0.0, max_value=10_000.0, step=1.0, key="new_delta_input")
+    else:  # weight_target
+        add_cols[3].markdown("Flow: auto")
+        add_cols[4].number_input("End Weight (g)", min_value=0.0, max_value=10_000.0, step=1.0, key="new_end_input")
+
+    if st.button("Add section"):
+        dur = float(st.session_state.new_duration_input)
+        if dur <= 0:
+            st.error("Duration must be > 0")
+        else:
+            if new_mode == "wait":
+                sec = BrewSection(duration_s=dur, mode="wait", value=0.0, label=str(st.session_state.new_label_input))
+            elif new_mode == "flow":
+                sec = BrewSection(duration_s=dur, mode="flow", value=float(st.session_state.new_flow_input), label=str(st.session_state.new_label_input))
+            elif new_mode == "weight_delta":
+                sec = BrewSection(duration_s=dur, mode="weight_delta", value=float(st.session_state.new_delta_input), label=str(st.session_state.new_label_input))
+            else:
+                sec = BrewSection(duration_s=dur, mode="weight_target", value=float(st.session_state.new_end_input), label=str(st.session_state.new_label_input))
+
+            st.session_state.sections = st.session_state.sections + [sec]
+            st.session_state.reset_add_row = True
+            _write_to_query_params()
+            st.rerun()
+
+    # ---- Export ----
     st.markdown("---")
     st.header("Export JSON")
 
