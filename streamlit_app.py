@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Tuple
 import altair as alt
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from bc_ref_builder import BrewSection, build_reference_json, compute_section_summaries
 
@@ -28,6 +29,105 @@ MODE_LABELS = {
 }
 LABEL_TO_MODE = {v: k for k, v in MODE_LABELS.items()}
 MODE_TO_LABEL = {k: v for k, v in MODE_LABELS.items()}
+
+
+# ----------------------------
+# Compatibility wrappers (new Streamlit: width="stretch", old Streamlit: use_container_width=True)
+# ----------------------------
+def _chart_render(chart: alt.Chart) -> None:
+    try:
+        # Newer Streamlit
+        st.altair_chart(chart, width="stretch")
+    except TypeError:
+        # Older Streamlit
+        st.altair_chart(chart, use_container_width=True)
+
+
+def _download_button(label: str, data: bytes, file_name: str, mime: str) -> None:
+    try:
+        st.download_button(label, data=data, file_name=file_name, mime=mime, width="stretch")
+    except TypeError:
+        st.download_button(label, data=data, file_name=file_name, mime=mime, use_container_width=True)
+
+
+def _stretch_button(container, label: str, key: str) -> bool:
+    # Buttons inside columns: prefer use_container_width (widely supported).
+    try:
+        return container.button(label, key=key, use_container_width=True)
+    except TypeError:
+        return container.button(label, key=key)
+
+
+def _stretch_main_button(label: str, key: str) -> bool:
+    try:
+        return st.button(label, key=key, use_container_width=True)
+    except TypeError:
+        return st.button(label, key=key)
+
+
+# ----------------------------
+# Hard block on small portrait screens (<= 699px and portrait)
+# - Real blocking: disables clicks/inputs via pointer-events + overlay
+# - Auto-updates on resize/orientationchange WITHOUT refresh
+# ----------------------------
+def _inject_viewport_blocker() -> None:
+    st.markdown(
+        """
+<style>
+  /* Fullscreen overlay that BLOCKS all interaction underneath */
+  #bc_overlay_block {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 2147483647; /* max-ish */
+    background: rgba(0,0,0,0.78);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    text-align: center;
+  }
+
+  #bc_overlay_block .bc_box{
+    max-width: 520px;
+    width: 100%;
+    border-radius: 16px;
+    padding: 18px;
+    border: 1px solid rgba(255,193,7,0.35);
+    background: rgba(255,193,7,0.12);
+    color: white;
+    font-size: 16px;
+    line-height: 1.35;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  #bc_overlay_block .bc_title{
+    font-weight: 700;
+    margin-bottom: 8px;
+    font-size: 17px;
+  }
+
+  /*
+    Block when:
+      - width <= 699px AND
+      - portrait-ish (aspect ratio <= 1)
+    (Using aspect-ratio is more stable than orientation in DevTools.)
+  */
+  @media (max-width: 699px) and (max-aspect-ratio: 1/1) {
+    #bc_overlay_block { display: flex; }
+  }
+</style>
+
+<div id="bc_overlay_block" role="dialog" aria-modal="true">
+  <div class="bc_box">
+    <div class="bc_title">📱 Editor disabled on small portrait screens</div>
+    Rotate to <b>landscape</b> or open on <b>desktop</b>.
+  </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # ----------------------------
@@ -79,7 +179,7 @@ def _restore_from_query_params() -> None:
 
 
 def _sync_url_if_needed() -> None:
-    """Update ?profile=... only when it actually changed (prevents annoying extra reruns online)."""
+    """Update ?profile=... only when it actually changed."""
     try:
         payload = json.dumps(_sections_to_compact(st.session_state.sections), separators=(",", ":"))
         if st.session_state.get("_last_profile_payload") != payload:
@@ -101,18 +201,14 @@ def _new_section_id() -> int:
 
 
 def _ensure_ids_match_sections() -> None:
-    """Make sure section_ids exists and matches len(sections)."""
     if "section_ids" not in st.session_state:
         st.session_state.section_ids = []
 
     ids: List[int] = list(st.session_state.section_ids)
     n = len(st.session_state.sections)
 
-    # extend
     while len(ids) < n:
         ids.append(_new_section_id())
-
-    # trim
     if len(ids) > n:
         ids = ids[:n]
 
@@ -120,11 +216,12 @@ def _ensure_ids_match_sections() -> None:
 
 
 def _reset_ids_for_sections() -> None:
-    """Assign fresh ids (useful after importing/restoring)."""
     st.session_state.section_ids = [_new_section_id() for _ in range(len(st.session_state.sections))]
 
 
-def _move_section_pair(sections: List[BrewSection], ids: List[int], i: int, direction: int) -> Tuple[List[BrewSection], List[int]]:
+def _move_section_pair(
+    sections: List[BrewSection], ids: List[int], i: int, direction: int
+) -> Tuple[List[BrewSection], List[int]]:
     j = i + direction
     if j < 0 or j >= len(sections):
         return sections, ids
@@ -148,16 +245,12 @@ def _init_state() -> None:
 
     _restore_from_query_params()
 
-    # init ids after restore (or first run)
     if "section_ids" not in st.session_state:
         st.session_state.section_ids = []
     if "next_section_id" not in st.session_state:
         st.session_state.next_section_id = 1
 
-    # If we restored sections from URL and ids are empty, create ids.
     _ensure_ids_match_sections()
-    if len(st.session_state.section_ids) != len(st.session_state.sections):
-        _reset_ids_for_sections()
 
     # Add-row widget keys
     for k, v in {
@@ -252,6 +345,7 @@ def _build_preview_df(sections: List[BrewSection], *, dt_s: float, initial_weigh
 def _sync_sections_from_widgets(sections: List[BrewSection], ids: List[int], *, initial_weight_g: float) -> List[BrewSection]:
     if not sections:
         return []
+
     summaries = compute_section_summaries(sections, initial_weight_g=initial_weight_g)
     new_sections: List[BrewSection] = []
 
@@ -322,52 +416,8 @@ def _sanitize_filename_base(name: str) -> str:
 
 def main() -> None:
     st.set_page_config(page_title="Beanconqueror Reference Graph Builder", page_icon="☕", layout="wide")
+    _inject_viewport_blocker()
     _init_state()
-
-    # --- ONLY ONE "warning" mechanism: a real blocking overlay (699px, portrait-ish) ---
-    st.markdown(
-        """
-        <style>
-          #bc_overlay {
-            display: none;
-            position: fixed;
-            inset: 0;
-            z-index: 999999;
-            background: rgba(0,0,0,0.75);
-            backdrop-filter: blur(2px);
-            -webkit-backdrop-filter: blur(2px);
-            align-items: center;
-            justify-content: center;
-            padding: 24px;
-            text-align: center;
-          }
-          #bc_overlay .box {
-            max-width: 520px;
-            width: 100%;
-            border-radius: 16px;
-            padding: 18px 18px;
-            border: 1px solid rgba(255,193,7,0.35);
-            background: rgba(255,193,7,0.12);
-            color: white;
-            font-size: 16px;
-            line-height: 1.35;
-          }
-          #bc_overlay .box b { display:block; margin-bottom: 8px; font-size: 17px; }
-
-          @media (max-width: 699px) and (max-aspect-ratio: 1/1) {
-            #bc_overlay { display: flex; }
-          }
-        </style>
-
-        <div id="bc_overlay">
-          <div class="box">
-            <b>📱 Editor disabled on small portrait screens</b>
-            Rotate to <b>landscape</b> or open on <b>desktop</b>.
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
     st.title("Beanconqueror Reference Graph Builder ☕")
 
@@ -390,17 +440,15 @@ def main() -> None:
             _sync_url_if_needed()
             st.rerun()
 
+    _ensure_ids_match_sections()
     sections: List[BrewSection] = st.session_state.sections
     ids: List[int] = list(st.session_state.section_ids)
-    _ensure_ids_match_sections()
-    sections = st.session_state.sections
-    ids = list(st.session_state.section_ids)
 
     # ---- Plot ----
     if sections:
         try:
             df_preview = _build_preview_df(sections, dt_s=float(dt_s), initial_weight_g=float(initial_weight_g))
-            st.altair_chart(_chart(df_preview), use_container_width=True)
+            _chart_render(_chart(df_preview))
             st.caption("Left axis: weight (g). Right axis: flow (g/s).")
         except Exception as e:
             st.error(f"Could not build preview: {e}")
@@ -501,27 +549,26 @@ def main() -> None:
             else:
                 cols[8].markdown(_fmt(float(row["end_weight_g"])))
 
-            if cols[9].button("↑", key=f"up_{sid}", width="stretch"):
+            if _stretch_button(cols[9], "↑", key=f"up_{sid}"):
                 new_secs, new_ids = _move_section_pair(sections, ids, i, -1)
                 st.session_state.sections = new_secs
                 st.session_state.section_ids = new_ids
                 _sync_url_if_needed()
                 st.rerun()
 
-            if cols[10].button("↓", key=f"down_{sid}", width="stretch"):
+            if _stretch_button(cols[10], "↓", key=f"down_{sid}"):
                 new_secs, new_ids = _move_section_pair(sections, ids, i, +1)
                 st.session_state.sections = new_secs
                 st.session_state.section_ids = new_ids
                 _sync_url_if_needed()
                 st.rerun()
 
-            if cols[11].button("🗑️", key=f"del_{sid}", width="stretch"):
+            if _stretch_button(cols[11], "🗑️", key=f"del_{sid}"):
                 st.session_state.sections = sections[:i] + sections[i + 1 :]
                 st.session_state.section_ids = ids[:i] + ids[i + 1 :]
                 _sync_url_if_needed()
                 st.rerun()
 
-        # Apply edits (won't break ordering now because keys are stable by id)
         new_sections = _sync_sections_from_widgets(sections, ids, initial_weight_g=float(initial_weight_g))
         if new_sections != sections:
             st.session_state.sections = new_sections
@@ -552,7 +599,7 @@ def main() -> None:
         add_cols[3].markdown("Flow: auto")
         add_cols[4].number_input("End Weight (g)", min_value=0.0, max_value=10_000.0, step=1.0, key="new_end_input")
 
-    if st.button("Add section", width="stretch"):
+    if _stretch_main_button("Add section", key="add_section_btn"):
         dur = float(st.session_state.new_duration_input)
         if dur <= 0:
             st.error("Duration must be > 0")
@@ -599,12 +646,11 @@ def main() -> None:
     fn_base = _sanitize_filename_base(str(st.session_state.export_filename)) or _default_filename_base()
     fn = fn_base if fn_base.lower().endswith(".json") else (fn_base + ".json")
 
-    st.download_button("📥 Download JSON", data=out_bytes, file_name=fn, mime="application/json", width="stretch")
+    _download_button("📥 Download JSON", data=out_bytes, file_name=fn, mime="application/json")
 
     with st.expander("JSON structure"):
         st.code(_json_tree(out), language="text")
 
-    # Keep URL updated (refresh-safe) without spamming changes
     _sync_url_if_needed()
 
 
