@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import altair as alt
 import pandas as pd
@@ -78,12 +78,61 @@ def _restore_from_query_params() -> None:
     st.session_state._restored_from_url = True
 
 
-def _write_to_query_params() -> None:
+def _sync_url_if_needed() -> None:
+    """Update ?profile=... only when it actually changed (prevents annoying extra reruns online)."""
     try:
-        payload = _sections_to_compact(st.session_state.sections)
-        st.query_params["profile"] = json.dumps(payload, separators=(",", ":"))
+        payload = json.dumps(_sections_to_compact(st.session_state.sections), separators=(",", ":"))
+        if st.session_state.get("_last_profile_payload") != payload:
+            st.query_params["profile"] = payload
+            st.session_state._last_profile_payload = payload
     except Exception:
         pass
+
+
+# ----------------------------
+# Stable IDs for rows (fixes reorder-online)
+# ----------------------------
+def _new_section_id() -> int:
+    if "next_section_id" not in st.session_state:
+        st.session_state.next_section_id = 1
+    sid = int(st.session_state.next_section_id)
+    st.session_state.next_section_id = sid + 1
+    return sid
+
+
+def _ensure_ids_match_sections() -> None:
+    """Make sure section_ids exists and matches len(sections)."""
+    if "section_ids" not in st.session_state:
+        st.session_state.section_ids = []
+
+    ids: List[int] = list(st.session_state.section_ids)
+    n = len(st.session_state.sections)
+
+    # extend
+    while len(ids) < n:
+        ids.append(_new_section_id())
+
+    # trim
+    if len(ids) > n:
+        ids = ids[:n]
+
+    st.session_state.section_ids = ids
+
+
+def _reset_ids_for_sections() -> None:
+    """Assign fresh ids (useful after importing/restoring)."""
+    st.session_state.section_ids = [_new_section_id() for _ in range(len(st.session_state.sections))]
+
+
+def _move_section_pair(sections: List[BrewSection], ids: List[int], i: int, direction: int) -> Tuple[List[BrewSection], List[int]]:
+    j = i + direction
+    if j < 0 or j >= len(sections):
+        return sections, ids
+    new_secs = sections[:]
+    new_ids = ids[:]
+    new_secs[i], new_secs[j] = new_secs[j], new_secs[i]
+    new_ids[i], new_ids[j] = new_ids[j], new_ids[i]
+    return new_secs, new_ids
 
 
 # ----------------------------
@@ -99,6 +148,18 @@ def _init_state() -> None:
 
     _restore_from_query_params()
 
+    # init ids after restore (or first run)
+    if "section_ids" not in st.session_state:
+        st.session_state.section_ids = []
+    if "next_section_id" not in st.session_state:
+        st.session_state.next_section_id = 1
+
+    # If we restored sections from URL and ids are empty, create ids.
+    _ensure_ids_match_sections()
+    if len(st.session_state.section_ids) != len(st.session_state.sections):
+        _reset_ids_for_sections()
+
+    # Add-row widget keys
     for k, v in {
         "new_label_input": "",
         "new_mode_input": MODE_TO_LABEL["wait"],
@@ -134,17 +195,8 @@ def _fmt_time_mmss(t_s: float) -> str:
     return f"{m}:{s:02d}"
 
 
-def _section_key(i: int, field: str) -> str:
-    return f"sec_{i}_{field}"
-
-
-def _move_section(sections: List[BrewSection], i: int, direction: int) -> List[BrewSection]:
-    j = i + direction
-    if j < 0 or j >= len(sections):
-        return sections
-    new = sections[:]
-    new[i], new[j] = new[j], new[i]
-    return new
+def _wkey(section_id: int, field: str) -> str:
+    return f"sec_{section_id}_{field}"
 
 
 def _example_sections_from_script() -> List[BrewSection]:
@@ -177,12 +229,10 @@ def _chart(df: pd.DataFrame) -> alt.Chart:
             ),
         )
     )
-
     c_weight = base.mark_line(color=WEIGHT_COLOR, strokeWidth=2).encode(y=alt.Y("weight_g:Q", title="Weight (g)"))
     c_flow = base.mark_line(color=FLOW_COLOR, strokeWidth=2).encode(
         y=alt.Y("flow_gps:Q", title="Flow (g/s)", axis=alt.Axis(orient="right"))
     )
-
     return alt.layer(c_weight, c_flow).resolve_scale(y="independent").properties(height=280)
 
 
@@ -199,30 +249,28 @@ def _build_preview_df(sections: List[BrewSection], *, dt_s: float, initial_weigh
     )
 
 
-def _sync_sections_from_widgets(sections: List[BrewSection], *, initial_weight_g: float) -> List[BrewSection]:
+def _sync_sections_from_widgets(sections: List[BrewSection], ids: List[int], *, initial_weight_g: float) -> List[BrewSection]:
     if not sections:
         return []
-
     summaries = compute_section_summaries(sections, initial_weight_g=initial_weight_g)
     new_sections: List[BrewSection] = []
 
-    for i, (sec, summ) in enumerate(zip(sections, summaries)):
-        label = st.session_state.get(_section_key(i, "label"), sec.label)
-
-        mode_label = st.session_state.get(_section_key(i, "mode"), MODE_TO_LABEL[sec.mode])
+    for sec, sid, summ in zip(sections, ids, summaries):
+        label = st.session_state.get(_wkey(sid, "label"), sec.label)
+        mode_label = st.session_state.get(_wkey(sid, "mode"), MODE_TO_LABEL[sec.mode])
         mode = LABEL_TO_MODE.get(mode_label, sec.mode)
 
-        duration = float(st.session_state.get(_section_key(i, "duration"), sec.duration_s))
+        duration = float(st.session_state.get(_wkey(sid, "duration"), sec.duration_s))
         duration = max(duration, 0.1)
 
         if mode == "wait":
             value = 0.0
         elif mode == "flow":
-            value = float(st.session_state.get(_section_key(i, "flow"), summ["flow_gps"]))
+            value = float(st.session_state.get(_wkey(sid, "flow"), summ["flow_gps"]))
         elif mode == "weight_delta":
-            value = float(st.session_state.get(_section_key(i, "delta"), summ["delta_weight_g"]))
+            value = float(st.session_state.get(_wkey(sid, "delta"), summ["delta_weight_g"]))
         elif mode == "weight_target":
-            value = float(st.session_state.get(_section_key(i, "end"), summ["end_weight_g"]))
+            value = float(st.session_state.get(_wkey(sid, "end"), summ["end_weight_g"]))
         else:
             value = float(sec.value)
 
@@ -244,13 +292,11 @@ def _ordered_keys_for_tree(data: Dict[str, Any]) -> List[str]:
 def _json_tree(data: Dict[str, Any]) -> str:
     keys = _ordered_keys_for_tree(data)
     lines: List[str] = ["root"]
-
     for idx, k in enumerate(keys):
         v = data[k]
         last = idx == len(keys) - 1
         branch = "└─ " if last else "├─ "
         cont = "   " if last else "│  "
-
         if isinstance(v, list):
             suffix = " (empty)" if len(v) == 0 else ""
             lines.append(f"{branch}{k}{suffix}")
@@ -263,7 +309,6 @@ def _json_tree(data: Dict[str, Any]) -> str:
                 lines.append(f"{cont}├─ {ck}")
         else:
             lines.append(f"{branch}{k}")
-
     return "\n".join(lines)
 
 
@@ -279,7 +324,7 @@ def main() -> None:
     st.set_page_config(page_title="Beanconqueror Reference Graph Builder", page_icon="☕", layout="wide")
     _init_state()
 
-    # --- Single, reliable phone-portrait blocker (699px) ---
+    # --- ONLY ONE "warning" mechanism: a real blocking overlay (699px, portrait-ish) ---
     st.markdown(
         """
         <style>
@@ -309,7 +354,6 @@ def main() -> None:
           }
           #bc_overlay .box b { display:block; margin-bottom: 8px; font-size: 17px; }
 
-          /* show on small + portrait-ish screens */
           @media (max-width: 699px) and (max-aspect-ratio: 1/1) {
             #bc_overlay { display: flex; }
           }
@@ -336,16 +380,21 @@ def main() -> None:
 
         if st.button("🧹 Clear sections"):
             st.session_state.sections = []
-            _write_to_query_params()
+            st.session_state.section_ids = []
+            _sync_url_if_needed()
             st.rerun()
 
         if st.button("✨ Import example"):
             st.session_state.sections = _example_sections_from_script()
-            _write_to_query_params()
+            _reset_ids_for_sections()
+            _sync_url_if_needed()
             st.rerun()
 
     sections: List[BrewSection] = st.session_state.sections
-    _write_to_query_params()  # keep URL synced (refresh-safe)
+    ids: List[int] = list(st.session_state.section_ids)
+    _ensure_ids_match_sections()
+    sections = st.session_state.sections
+    ids = list(st.session_state.section_ids)
 
     # ---- Plot ----
     if sections:
@@ -379,16 +428,16 @@ def main() -> None:
         header_cols[10].markdown("**↓**")
         header_cols[11].markdown("**Del**")
 
-        for i, (sec, row) in enumerate(zip(sections, summaries)):
+        for i, (sec, sid, row) in enumerate(zip(sections, ids, summaries)):
             cols = st.columns([2.0, 2.2, 1.4, 1.1, 1.1, 1.3, 1.3, 1.2, 1.2, 0.5, 0.5, 0.5])
 
-            cols[0].text_input("Label", value=sec.label, key=_section_key(i, "label"), label_visibility="collapsed")
+            cols[0].text_input("Label", value=sec.label, key=_wkey(sid, "label"), label_visibility="collapsed")
 
             cols[1].selectbox(
                 "Mode",
                 options=list(LABEL_TO_MODE.keys()),
                 index=list(LABEL_TO_MODE.keys()).index(MODE_TO_LABEL[sec.mode]),
-                key=_section_key(i, "mode"),
+                key=_wkey(sid, "mode"),
                 label_visibility="collapsed",
             )
 
@@ -398,14 +447,14 @@ def main() -> None:
                 max_value=3600.0,
                 value=float(sec.duration_s),
                 step=0.5,
-                key=_section_key(i, "duration"),
+                key=_wkey(sid, "duration"),
                 label_visibility="collapsed",
             )
 
             cols[3].markdown(_fmt_time_mmss(row["t_start_s"]))
             cols[4].markdown(_fmt_time_mmss(row["t_end_s"]))
 
-            mode_label = st.session_state.get(_section_key(i, "mode"), MODE_TO_LABEL[sec.mode])
+            mode_label = st.session_state.get(_wkey(sid, "mode"), MODE_TO_LABEL[sec.mode])
             mode = LABEL_TO_MODE[mode_label]
 
             if mode == "wait":
@@ -418,7 +467,7 @@ def main() -> None:
                     max_value=1000.0,
                     value=float(row["flow_gps"]),
                     step=0.1,
-                    key=_section_key(i, "flow"),
+                    key=_wkey(sid, "flow"),
                     label_visibility="collapsed",
                 )
                 cols[6].markdown(_fmt(float(row["delta_weight_g"])))
@@ -430,7 +479,7 @@ def main() -> None:
                     max_value=10_000.0,
                     value=float(row["delta_weight_g"]),
                     step=1.0,
-                    key=_section_key(i, "delta"),
+                    key=_wkey(sid, "delta"),
                     label_visibility="collapsed",
                 )
             else:  # weight_target
@@ -446,31 +495,37 @@ def main() -> None:
                     max_value=10_000.0,
                     value=float(row["end_weight_g"]),
                     step=1.0,
-                    key=_section_key(i, "end"),
+                    key=_wkey(sid, "end"),
                     label_visibility="collapsed",
                 )
             else:
                 cols[8].markdown(_fmt(float(row["end_weight_g"])))
 
-            if cols[9].button("↑", key=f"up_{i}", use_container_width=True):
-                st.session_state.sections = _move_section(sections, i, -1)
-                _write_to_query_params()
+            if cols[9].button("↑", key=f"up_{sid}", width="stretch"):
+                new_secs, new_ids = _move_section_pair(sections, ids, i, -1)
+                st.session_state.sections = new_secs
+                st.session_state.section_ids = new_ids
+                _sync_url_if_needed()
                 st.rerun()
 
-            if cols[10].button("↓", key=f"down_{i}", use_container_width=True):
-                st.session_state.sections = _move_section(sections, i, +1)
-                _write_to_query_params()
+            if cols[10].button("↓", key=f"down_{sid}", width="stretch"):
+                new_secs, new_ids = _move_section_pair(sections, ids, i, +1)
+                st.session_state.sections = new_secs
+                st.session_state.section_ids = new_ids
+                _sync_url_if_needed()
                 st.rerun()
 
-            if cols[11].button("🗑️", key=f"del_{i}", use_container_width=True):
+            if cols[11].button("🗑️", key=f"del_{sid}", width="stretch"):
                 st.session_state.sections = sections[:i] + sections[i + 1 :]
-                _write_to_query_params()
+                st.session_state.section_ids = ids[:i] + ids[i + 1 :]
+                _sync_url_if_needed()
                 st.rerun()
 
-        new_sections = _sync_sections_from_widgets(sections, initial_weight_g=float(initial_weight_g))
+        # Apply edits (won't break ordering now because keys are stable by id)
+        new_sections = _sync_sections_from_widgets(sections, ids, initial_weight_g=float(initial_weight_g))
         if new_sections != sections:
             st.session_state.sections = new_sections
-            _write_to_query_params()
+            _sync_url_if_needed()
             st.rerun()
 
     # ---- Add row ----
@@ -497,7 +552,7 @@ def main() -> None:
         add_cols[3].markdown("Flow: auto")
         add_cols[4].number_input("End Weight (g)", min_value=0.0, max_value=10_000.0, step=1.0, key="new_end_input")
 
-    if st.button("Add section"):
+    if st.button("Add section", width="stretch"):
         dur = float(st.session_state.new_duration_input)
         if dur <= 0:
             st.error("Duration must be > 0")
@@ -512,8 +567,9 @@ def main() -> None:
                 sec = BrewSection(duration_s=dur, mode="weight_target", value=float(st.session_state.new_end_input), label=str(st.session_state.new_label_input))
 
             st.session_state.sections = st.session_state.sections + [sec]
+            st.session_state.section_ids = list(st.session_state.section_ids) + [_new_section_id()]
             st.session_state.reset_add_row = True
-            _write_to_query_params()
+            _sync_url_if_needed()
             st.rerun()
 
     # ---- Export ----
@@ -543,10 +599,13 @@ def main() -> None:
     fn_base = _sanitize_filename_base(str(st.session_state.export_filename)) or _default_filename_base()
     fn = fn_base if fn_base.lower().endswith(".json") else (fn_base + ".json")
 
-    st.download_button("📥 Download JSON", data=out_bytes, file_name=fn, mime="application/json")
+    st.download_button("📥 Download JSON", data=out_bytes, file_name=fn, mime="application/json", width="stretch")
 
     with st.expander("JSON structure"):
         st.code(_json_tree(out), language="text")
+
+    # Keep URL updated (refresh-safe) without spamming changes
+    _sync_url_if_needed()
 
 
 if __name__ == "__main__":
