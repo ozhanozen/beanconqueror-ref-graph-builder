@@ -364,7 +364,9 @@ def _sync_sections_from_widgets(sections: List[BrewSection], ids: List[int], *, 
         elif mode == "weight_delta":
             value = float(st.session_state.get(_wkey(sid, "delta"), summ["delta_weight_g"]))
         elif mode == "weight_target":
-            value = float(st.session_state.get(_wkey(sid, "end"), summ["end_weight_g"]))
+            start_w = float(summ["start_weight_g"])
+            proposed = float(st.session_state.get(_wkey(sid, "end"), summ["end_weight_g"]))
+            value = max(proposed, start_w)  # clamp / reset-to-start
         else:
             value = float(sec.value)
 
@@ -537,13 +539,24 @@ def main() -> None:
             cols[7].markdown(_fmt(float(row["start_weight_g"])))
 
             if mode == "weight_target":
+                start_w = float(row["start_weight_g"])
+                end_key = _wkey(sid, "end")
+
+                # If a stale widget value is now invalid (e.g., after reorder), reset it
+                if end_key in st.session_state:
+                    try:
+                        if float(st.session_state[end_key]) < start_w:
+                            st.session_state.pop(end_key, None)  # remove stale value BEFORE widget is created
+                    except Exception:
+                        st.session_state.pop(end_key, None)
+
                 cols[8].number_input(
                     "End Weight (g)",
-                    min_value=0.0,
+                    min_value=start_w,
                     max_value=10_000.0,
-                    value=float(row["end_weight_g"]),
+                    value=float(max(float(row["end_weight_g"]), start_w)),
                     step=1.0,
-                    key=_wkey(sid, "end"),
+                    key=end_key,
                     label_visibility="collapsed",
                 )
             else:
