@@ -423,6 +423,22 @@ def main() -> None:
 
     st.title("Beanconqueror Reference Graph Builder ☕")
 
+    st.markdown(
+        """
+        A lightweight tool to generate **reference brew graphs** for the coffee logging app **Beanconqueror**.
+
+        Beanconqueror allows importing graphs as JSON time series (e.g., weight and flow) which can be used as a reference in the background while tracking a new brew in real-time.  
+        This app provides an interactive editor to build such reference profiles section-by-section and export them in the JSON format expected by Beanconqueror.
+
+        - Supports section-based brewing logic (**flow**, **weight delta**, **weight target**, **wait**)
+        - Automatically computes the corresponding **flow/weight time series**
+        - Visualizes the resulting curves before export
+        - Exports JSON compatible with Beanconqueror reference graphs
+        """
+    )
+    st.markdown("---")
+    st.header("Graph Overview")
+
     with st.sidebar:
         st.header("Settings")
         dt_s = st.number_input("Sample period dT (s)", min_value=0.01, max_value=2.0, value=0.1, step=0.01)
@@ -458,7 +474,7 @@ def main() -> None:
         st.info("No sections yet. Add one below.")
 
     st.markdown("---")
-    st.header("Profile editor")
+    st.header("Profile Editor")
 
     # ---- Existing rows ----
     if sections:
@@ -590,7 +606,7 @@ def main() -> None:
 
     # ---- Add row ----
     st.markdown("---")
-    st.subheader("+ Add section")
+    st.subheader("+ Add Section")
 
     add_cols = st.columns([2.0, 2.2, 1.4, 1.3, 1.3])
     add_cols[0].text_input("Label", key="new_label_input")
