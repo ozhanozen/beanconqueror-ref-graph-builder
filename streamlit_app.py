@@ -480,6 +480,19 @@ def main() -> None:
     if sections:
         summaries = compute_section_summaries(sections, initial_weight_g=float(initial_weight_g))
 
+        # --- Pre-pass: clear stale Target Weight widget values BEFORE widgets are created ---
+        # This prevents cases (especially online) where after reordering the section,
+        # the stored end weight becomes invalid (< start weight), but Streamlit keeps the old widget value.
+        for sid, row in zip(ids, summaries):
+            end_key = _wkey(sid, "end")
+            if end_key in st.session_state:
+                try:
+                    start_w = float(row["start_weight_g"])
+                    if float(st.session_state[end_key]) < start_w:
+                        st.session_state.pop(end_key, None)
+                except Exception:
+                    st.session_state.pop(end_key, None)
+
         header_cols = st.columns([2.0, 2.2, 1.4, 1.1, 1.1, 1.3, 1.3, 1.2, 1.2, 0.5, 0.5, 0.5])
         header_cols[0].markdown("**Label**")
         header_cols[1].markdown("**Mode**")
@@ -557,14 +570,6 @@ def main() -> None:
             if mode == "weight_target":
                 start_w = float(row["start_weight_g"])
                 end_key = _wkey(sid, "end")
-
-                # If a stale widget value is now invalid (e.g., after reorder), reset it
-                if end_key in st.session_state:
-                    try:
-                        if float(st.session_state[end_key]) < start_w:
-                            st.session_state.pop(end_key, None)  # remove stale value BEFORE widget is created
-                    except Exception:
-                        st.session_state.pop(end_key, None)
 
                 cols[8].number_input(
                     "End Weight (g)",
