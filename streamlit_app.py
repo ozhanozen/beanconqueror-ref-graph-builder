@@ -713,11 +713,11 @@ def main() -> None:
     This app provides an interactive editor to build such reference profiles section-by-section and export them in the JSON format expected by Beanconqueror.
 
     - Supports a **Weight / Flow profile editor**
-    - Section-based logic: **Constant**, **Δ Weight**, **Target Weight**, **Flow**
+        - Section-based logic: **Constant**, **Δ Weight**, **Target Weight**, **Flow**
     - Supports a **Pressure profile editor**
-    - Section-based logic: **Constant**, **Δ Value**, **Target**
+        - Section-based logic: **Constant**, **Δ Value**, **Target**
     - Supports a **Temperature profile editor**
-    - Section-based logic: **Constant**, **Δ Value**, **Target**
+        - Section-based logic: **Constant**, **Δ Value**, **Target**
     - Enable/disable each profile independently (weight/flow, pressure, temperature)
     - Automatically computes the corresponding time series
     - Visualizes all enabled profiles on the same graph before export
