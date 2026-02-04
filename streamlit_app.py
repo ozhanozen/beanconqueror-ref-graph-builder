@@ -707,15 +707,21 @@ def main() -> None:
 
     st.markdown(
         """
-A lightweight tool to generate **reference brew graphs** for the coffee logging app **Beanconqueror**.
+    A lightweight tool to generate **reference brew graphs** for the coffee logging app **Beanconqueror**.
 
-Beanconqueror allows importing graphs as JSON time series (e.g., weight and flow) which can be used as a reference in the background while tracking a new brew in real-time.  
-This app provides an interactive editor to build such reference profiles section-by-section and export them in the JSON format expected by Beanconqueror.
+    Beanconqueror allows importing graphs as JSON time series (e.g., weight, flow, pressure, temperature) which can be used as a reference in the background while tracking a new brew in real-time.  
+    This app provides an interactive editor to build such reference profiles section-by-section and export them in the JSON format expected by Beanconqueror.
 
-- Supports section-based brewing logic (**flow**, **weight delta**, **weight target**, **constant**)
-- Automatically computes the corresponding time series
-- Visualizes the curves before export
-- Exports JSON compatible with Beanconqueror reference graphs
+    - Supports a **Weight / Flow profile editor**
+    - Section-based logic: **Constant**, **Δ Weight**, **Target Weight**, **Flow**
+    - Supports a **Pressure profile editor**
+    - Section-based logic: **Constant**, **Δ Value**, **Target**
+    - Supports a **Temperature profile editor**
+    - Section-based logic: **Constant**, **Δ Value**, **Target**
+    - Enable/disable each profile independently (weight/flow, pressure, temperature)
+    - Automatically computes the corresponding time series
+    - Visualizes all enabled profiles on the same graph before export
+    - Exports JSON compatible with Beanconqueror reference graphs
         """
     )
 
