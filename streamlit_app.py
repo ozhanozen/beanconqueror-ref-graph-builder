@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Tuple
 import altair as alt
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
+import streamlit.components.v1 as components  # noqa: F401
 
 from bc_ref_builder import BrewSection, build_reference_json, compute_section_summaries
 
@@ -36,10 +36,8 @@ MODE_TO_LABEL = {k: v for k, v in MODE_LABELS.items()}
 # ----------------------------
 def _chart_render(chart: alt.Chart) -> None:
     try:
-        # Newer Streamlit
         st.altair_chart(chart, width="stretch")
     except TypeError:
-        # Older Streamlit
         st.altair_chart(chart, use_container_width=True)
 
 
@@ -51,7 +49,6 @@ def _download_button(label: str, data: bytes, file_name: str, mime: str) -> None
 
 
 def _stretch_button(container, label: str, key: str) -> bool:
-    # Buttons inside columns: prefer use_container_width (widely supported).
     try:
         return container.button(label, key=key, use_container_width=True)
     except TypeError:
@@ -67,8 +64,6 @@ def _stretch_main_button(label: str, key: str) -> bool:
 
 # ----------------------------
 # Hard block on small portrait screens (<= 699px and portrait)
-# - Real blocking: disables clicks/inputs via pointer-events + overlay
-# - Auto-updates on resize/orientationchange WITHOUT refresh
 # ----------------------------
 def _inject_viewport_blocker() -> None:
     st.markdown(
@@ -112,7 +107,6 @@ def _inject_viewport_blocker() -> None:
     Block when:
       - width <= 699px AND
       - portrait-ish (aspect ratio <= 1)
-    (Using aspect-ratio is more stable than orientation in DevTools.)
   */
   @media (max-width: 699px) and (max-aspect-ratio: 1/1) {
     #bc_overlay_block { display: flex; }
@@ -250,6 +244,11 @@ def _init_state() -> None:
     if "next_section_id" not in st.session_state:
         st.session_state.next_section_id = 1
 
+    # IMPORTANT: versioned key namespace for Target Weight widgets.
+    # Bumped on reorder -> forces fresh widget state on Streamlit Cloud.
+    if "target_end_key_version" not in st.session_state:
+        st.session_state.target_end_key_version = 0
+
     _ensure_ids_match_sections()
 
     # Add-row widget keys
@@ -290,6 +289,15 @@ def _fmt_time_mmss(t_s: float) -> str:
 
 def _wkey(section_id: int, field: str) -> str:
     return f"sec_{section_id}_{field}"
+
+
+def _end_key(section_id: int) -> str:
+    """
+    Versioned widget key for Target Weight (end weight).
+    After reorder we bump the version, so Streamlit cannot reuse stale values.
+    """
+    v = int(st.session_state.get("target_end_key_version", 0))
+    return f"{_wkey(section_id, 'end')}_v{v}"
 
 
 def _example_sections_from_script() -> List[BrewSection]:
@@ -365,7 +373,7 @@ def _sync_sections_from_widgets(sections: List[BrewSection], ids: List[int], *, 
             value = float(st.session_state.get(_wkey(sid, "delta"), summ["delta_weight_g"]))
         elif mode == "weight_target":
             start_w = float(summ["start_weight_g"])
-            proposed = float(st.session_state.get(_wkey(sid, "end"), summ["end_weight_g"]))
+            proposed = float(st.session_state.get(_end_key(sid), summ["end_weight_g"]))
             value = max(proposed, start_w)  # clamp / reset-to-start
         else:
             value = float(sec.value)
@@ -373,35 +381,6 @@ def _sync_sections_from_widgets(sections: List[BrewSection], ids: List[int], *, 
         new_sections.append(BrewSection(duration_s=duration, mode=mode, value=value, label=str(label)))
 
     return new_sections
-
-
-def _sanitize_target_end_widget_values(
-    sections: List[BrewSection],
-    ids: List[int],
-    summaries: List[Dict[str, Any]],
-) -> None:
-    for sec, sid, row in zip(sections, ids, summaries):
-        mode_label = st.session_state.get(_wkey(sid, "mode"), MODE_TO_LABEL[sec.mode])
-        mode = LABEL_TO_MODE.get(mode_label, sec.mode)
-        if mode != "weight_target":
-            continue
-
-        start_w = float(row["start_weight_g"])
-        end_key = _wkey(sid, "end")
-
-        if end_key in st.session_state:
-            try:
-                v = float(st.session_state[end_key])
-            except Exception:
-                v = start_w
-
-            if v < start_w:
-                # Prefer clearing stale UI state so widget uses value=... (already clamped)
-                try:
-                    del st.session_state[end_key]
-                except Exception:
-                    # Some Streamlit versions forbid mutation here; ignore (model still clamps later)
-                    pass
 
 
 def _ordered_keys_for_tree(data: Dict[str, Any]) -> List[str]:
@@ -454,17 +433,18 @@ def main() -> None:
 
     st.markdown(
         """
-        A lightweight tool to generate **reference brew graphs** for the coffee logging app **Beanconqueror**.
+A lightweight tool to generate **reference brew graphs** for the coffee logging app **Beanconqueror**.
 
-        Beanconqueror allows importing graphs as JSON time series (e.g., weight and flow) which can be used as a reference in the background while tracking a new brew in real-time.  
-        This app provides an interactive editor to build such reference profiles section-by-section and export them in the JSON format expected by Beanconqueror.
+Beanconqueror allows importing graphs as JSON time series (e.g., weight and flow) which can be used as a reference in the background while tracking a new brew in real-time.  
+This app provides an interactive editor to build such reference profiles section-by-section and export them in the JSON format expected by Beanconqueror.
 
-        - Supports section-based brewing logic (**flow**, **weight delta**, **weight target**, **wait**)
-        - Automatically computes the corresponding **flow/weight time series**
-        - Visualizes the resulting curves before export
-        - Exports JSON compatible with Beanconqueror reference graphs
+- Supports section-based brewing logic (**flow**, **weight delta**, **weight target**, **wait**)
+- Automatically computes the corresponding **flow/weight time series**
+- Visualizes the resulting curves before export
+- Exports JSON compatible with Beanconqueror reference graphs
         """
     )
+
     st.markdown("---")
     st.header("Graph Overview")
 
@@ -509,8 +489,6 @@ def main() -> None:
     if sections:
         summaries = compute_section_summaries(sections, initial_weight_g=float(initial_weight_g))
 
-        _sanitize_target_end_widget_values(sections, ids, summaries)
-        
         header_cols = st.columns([2.0, 2.2, 1.4, 1.1, 1.1, 1.3, 1.3, 1.2, 1.2, 0.5, 0.5, 0.5])
         header_cols[0].markdown("**Label**")
         header_cols[1].markdown("**Mode**")
@@ -587,7 +565,7 @@ def main() -> None:
 
             if mode == "weight_target":
                 start_w = float(row["start_weight_g"])
-                end_key = _wkey(sid, "end")
+                end_key = _end_key(sid)
 
                 cols[8].number_input(
                     "End Weight (g)",
@@ -605,6 +583,7 @@ def main() -> None:
                 new_secs, new_ids = _move_section_pair(sections, ids, i, -1)
                 st.session_state.sections = new_secs
                 st.session_state.section_ids = new_ids
+                st.session_state.target_end_key_version = int(st.session_state.get("target_end_key_version", 0)) + 1
                 _sync_url_if_needed()
                 st.rerun()
 
@@ -612,6 +591,7 @@ def main() -> None:
                 new_secs, new_ids = _move_section_pair(sections, ids, i, +1)
                 st.session_state.sections = new_secs
                 st.session_state.section_ids = new_ids
+                st.session_state.target_end_key_version = int(st.session_state.get("target_end_key_version", 0)) + 1
                 _sync_url_if_needed()
                 st.rerun()
 
