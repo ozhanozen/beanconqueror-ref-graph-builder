@@ -375,6 +375,35 @@ def _sync_sections_from_widgets(sections: List[BrewSection], ids: List[int], *, 
     return new_sections
 
 
+def _sanitize_target_end_widget_values(
+    sections: List[BrewSection],
+    ids: List[int],
+    summaries: List[Dict[str, Any]],
+) -> None:
+    for sec, sid, row in zip(sections, ids, summaries):
+        mode_label = st.session_state.get(_wkey(sid, "mode"), MODE_TO_LABEL[sec.mode])
+        mode = LABEL_TO_MODE.get(mode_label, sec.mode)
+        if mode != "weight_target":
+            continue
+
+        start_w = float(row["start_weight_g"])
+        end_key = _wkey(sid, "end")
+
+        if end_key in st.session_state:
+            try:
+                v = float(st.session_state[end_key])
+            except Exception:
+                v = start_w
+
+            if v < start_w:
+                # Prefer clearing stale UI state so widget uses value=... (already clamped)
+                try:
+                    del st.session_state[end_key]
+                except Exception:
+                    # Some Streamlit versions forbid mutation here; ignore (model still clamps later)
+                    pass
+
+
 def _ordered_keys_for_tree(data: Dict[str, Any]) -> List[str]:
     filled = [k for k, v in data.items() if isinstance(v, list) and len(v) > 0]
     empty = [k for k, v in data.items() if isinstance(v, list) and len(v) == 0]
@@ -480,19 +509,8 @@ def main() -> None:
     if sections:
         summaries = compute_section_summaries(sections, initial_weight_g=float(initial_weight_g))
 
-        # --- Pre-pass: clear stale Target Weight widget values BEFORE widgets are created ---
-        # This prevents cases (especially online) where after reordering the section,
-        # the stored end weight becomes invalid (< start weight), but Streamlit keeps the old widget value.
-        for sid, row in zip(ids, summaries):
-            end_key = _wkey(sid, "end")
-            if end_key in st.session_state:
-                try:
-                    start_w = float(row["start_weight_g"])
-                    if float(st.session_state[end_key]) < start_w:
-                        st.session_state.pop(end_key, None)
-                except Exception:
-                    st.session_state.pop(end_key, None)
-
+        _sanitize_target_end_widget_values(sections, ids, summaries)
+        
         header_cols = st.columns([2.0, 2.2, 1.4, 1.1, 1.1, 1.3, 1.3, 1.2, 1.2, 0.5, 0.5, 0.5])
         header_cols[0].markdown("**Label**")
         header_cols[1].markdown("**Mode**")
