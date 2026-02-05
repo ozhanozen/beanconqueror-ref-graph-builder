@@ -712,19 +712,26 @@ def main() -> None:
     Beanconqueror allows importing graphs as JSON time series (e.g., weight, flow, pressure, temperature) which can be used as a reference in the background while tracking a new brew in real-time.  
     This app provides an interactive editor to build such reference profiles section-by-section and export them in the JSON format expected by Beanconqueror.
 
-    - Supports a **Weight / Flow profile editor**
-        - Section-based logic: **Constant**, **Δ Weight**, **Target Weight**, **Flow**
-    - Supports a **Pressure profile editor**
-        - Section-based logic: **Constant**, **Δ Value**, **Target**
-    - Supports a **Temperature profile editor**
-        - Section-based logic: **Constant**, **Δ Value**, **Target**
+    - It supports section-based logic:
+        - **Weight / Flow profile editor:** Constant Weight, Δ Weight, Target Weight, Constant Flow
+        - **Pressure profile editor:** Constant Pressure, Δ Pressure, Target Pressure
+        - **Temperature profile editor:** Constant Temperature, Δ Temperature, Target Temperature
     - Enable/disable each profile independently (weight/flow, pressure, temperature)
-    - Automatically computes the corresponding time series
-    - Visualizes all enabled profiles on the same graph before export
-    - Exports JSON compatible with Beanconqueror reference graphs
+    - Automatic computation of the corresponding time series
+    - Visualization of all enabled profiles on the same graph before export
+    - Export of JSON compatible with Beanconqueror reference graphs
+
+    ### Usage
+    1. Enable the profiles you want (Weight/Flow, Pressure, Temperature)
+    2. Add/edit sections
+    3. Download the exported `.json`
+    4. Import it into Beanconqueror as a reference graph
         """
     )
-
+    st.markdown("")
+    st.markdown(
+        "Feel free to report any bugs or suggestions via [Github Issues](https://github.com/ozhanozen/beanconqueror-ref-graph-builder/issues)."
+    )
     st.markdown("---")
     st.header("Graph Overview")
 
